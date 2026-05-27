@@ -4,11 +4,6 @@ import { join } from 'pathe';
 import type { ContentPart, Message } from '@moonshot-ai/kosong';
 import type { AgentRecord } from './types';
 
-export interface BlobOffloadOptions {
-  readonly blobsDir: string;
-  readonly threshold?: number;
-}
-
 const DEFAULT_THRESHOLD = 4096;
 const BLOBREF_PROTOCOL = 'blobref:';
 const DATA_URI_HEADER_RE = /^data:([^;]+);base64,/;
@@ -18,126 +13,92 @@ export function isBlobRef(url: string): boolean {
   return url.startsWith(BLOBREF_PROTOCOL);
 }
 
-export async function writeBlob(
-  blobsDir: string,
-  mimeType: string,
-  base64Payload: string,
-): Promise<string> {
-  await mkdir(blobsDir, { recursive: true, mode: 0o700 });
-  const hash = createHash('sha256').update(base64Payload, 'utf8').digest('hex');
-  const blobPath = join(blobsDir, hash);
-  try {
-    const fh = await open(blobPath, 'wx');
-    try {
-      await fh.writeFile(base64Payload, 'utf8');
-      await fh.sync();
-    } finally {
-      await fh.close();
-    }
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== 'EEXIST') throw error;
-  }
-  return `${BLOBREF_PROTOCOL}${mimeType};${hash}`;
+export interface BlobStoreOptions {
+  readonly blobsDir: string;
+  readonly threshold?: number;
 }
 
-export async function readBlob(blobsDir: string, hash: string): Promise<string | undefined> {
-  try {
-    return await readFile(join(blobsDir, hash), 'utf8');
-  } catch {
-    return undefined;
+export class BlobStore {
+  private readonly blobsDir: string;
+  private readonly threshold: number;
+
+  constructor(options: BlobStoreOptions) {
+    this.blobsDir = options.blobsDir;
+    this.threshold = options.threshold ?? DEFAULT_THRESHOLD;
   }
-}
 
-export async function offloadRecordBlobs(
-  record: AgentRecord,
-  options: BlobOffloadOptions,
-): Promise<AgentRecord> {
-  const threshold = options.threshold ?? DEFAULT_THRESHOLD;
-
-  switch (record.type) {
-    case 'turn.prompt':
-    case 'turn.steer':
-      await offloadContentParts(record.input, options.blobsDir, threshold);
-      break;
-    case 'context.append_message':
-      await offloadContentParts(record.message.content, options.blobsDir, threshold);
-      break;
-    case 'context.append_loop_event': {
-      const event = record.event;
-      if (event.type === 'tool.result' && typeof event.result.output !== 'string') {
-        await offloadContentParts(event.result.output, options.blobsDir, threshold);
+  async offload(record: AgentRecord): Promise<void> {
+    switch (record.type) {
+      case 'turn.prompt':
+      case 'turn.steer':
+        for (const part of record.input) {
+          await offloadContentPart(part, this.blobsDir, this.threshold);
+        }
+        break;
+      case 'context.append_message':
+        for (const part of record.message.content) {
+          await offloadContentPart(part, this.blobsDir, this.threshold);
+        }
+        break;
+      case 'context.append_loop_event': {
+        const event = record.event;
+        if (event.type === 'tool.result' && typeof event.result.output !== 'string') {
+          for (const part of event.result.output) {
+            await offloadContentPart(part, this.blobsDir, this.threshold);
+          }
+        }
+        break;
       }
-      break;
+      default:
+        break;
     }
-    default:
-      break;
   }
 
-  return record;
-}
-
-export async function rehydrateRecordBlobs(
-  record: AgentRecord,
-  blobsDir: string,
-): Promise<AgentRecord> {
-  switch (record.type) {
-    case 'turn.prompt':
-    case 'turn.steer':
-      await rehydrateContentParts(record.input, blobsDir);
-      break;
-    case 'context.append_message':
-      await rehydrateContentParts(record.message.content, blobsDir);
-      break;
-    case 'context.append_loop_event': {
-      const event = record.event;
-      if (event.type === 'tool.result' && typeof event.result.output !== 'string') {
-        await rehydrateContentParts(event.result.output, blobsDir);
+  async rehydrate(record: AgentRecord): Promise<void> {
+    switch (record.type) {
+      case 'turn.prompt':
+      case 'turn.steer':
+        for (const part of record.input) {
+          await rehydrateContentPart(part, this.blobsDir);
+        }
+        break;
+      case 'context.append_message':
+        for (const part of record.message.content) {
+          await rehydrateContentPart(part, this.blobsDir);
+        }
+        break;
+      case 'context.append_loop_event': {
+        const event = record.event;
+        if (event.type === 'tool.result' && typeof event.result.output !== 'string') {
+          for (const part of event.result.output) {
+            await rehydrateContentPart(part, this.blobsDir);
+          }
+        }
+        break;
       }
-      break;
+      default:
+        break;
     }
-    default:
-      break;
   }
-  return record;
-}
 
-export async function rehydrateMessagesBlobs(
-  messages: readonly Message[],
-  blobsDir: string,
-): Promise<Message[]> {
-  return Promise.all(
-    messages.map(async (msg): Promise<Message> => {
-      if (msg.content.length === 0) return msg;
-      const clone = structuredClone(msg) as Message;
-      for (const part of clone.content) {
-        await rehydrateContentPart(part, blobsDir);
-      }
-      return {
-        role: clone.role,
-        name: clone.name,
-        content: clone.content.map((part) => downgradeMissingMedia(part)),
-        toolCalls: clone.toolCalls,
-        toolCallId: clone.toolCallId,
-        partial: clone.partial,
-      };
-    }),
-  );
-}
-
-async function offloadContentParts(
-  parts: readonly ContentPart[],
-  blobsDir: string,
-  threshold: number,
-): Promise<void> {
-  for (const part of parts) {
-    await offloadContentPart(part, blobsDir, threshold);
-  }
-}
-
-async function rehydrateContentParts(parts: readonly ContentPart[], blobsDir: string): Promise<void> {
-  for (const part of parts) {
-    await rehydrateContentPart(part, blobsDir);
+  async rehydrateMessages(messages: readonly Message[]): Promise<Message[]> {
+    return Promise.all(
+      messages.map(async (msg): Promise<Message> => {
+        if (msg.content.length === 0) return msg;
+        const clone = structuredClone(msg) as Message;
+        for (const part of clone.content) {
+          await rehydrateContentPart(part, this.blobsDir);
+        }
+        return {
+          role: clone.role,
+          name: clone.name,
+          content: clone.content.map((part) => downgradeMissingMedia(part)),
+          toolCalls: clone.toolCalls,
+          toolCallId: clone.toolCallId,
+          partial: clone.partial,
+        };
+      }),
+    );
   }
 }
 
@@ -218,11 +179,34 @@ async function rehydrateBlobRefUrl(url: string, blobsDir: string): Promise<strin
   if (hash.length === 0) {
     return undefined;
   }
-  const payload = await readBlob(blobsDir, hash);
+  const payload = await readFile(join(blobsDir, hash), 'utf8').catch(() => undefined);
   if (payload === undefined) {
     return undefined;
   }
   return `data:${mimeType};base64,${payload}`;
+}
+
+async function writeBlob(
+  blobsDir: string,
+  mimeType: string,
+  base64Payload: string,
+): Promise<string> {
+  await mkdir(blobsDir, { recursive: true, mode: 0o700 });
+  const hash = createHash('sha256').update(base64Payload, 'utf8').digest('hex');
+  const blobPath = join(blobsDir, hash);
+  try {
+    const fh = await open(blobPath, 'wx');
+    try {
+      await fh.writeFile(base64Payload, 'utf8');
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'EEXIST') throw error;
+  }
+  return `${BLOBREF_PROTOCOL}${mimeType};${hash}`;
 }
 
 function asMediaContainer(value: unknown): { url: unknown } | undefined {

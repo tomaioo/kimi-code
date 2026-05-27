@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   AGENT_WIRE_PROTOCOL_VERSION,
+  BlobStore,
   FileSystemAgentRecordPersistence,
   InMemoryAgentRecordPersistence,
   type AgentRecord,
@@ -225,7 +226,9 @@ describe('FileSystemAgentRecordPersistence', () => {
 
     const wirePath = join(dir, 'wire.jsonl');
     const blobsDir = join(dir, 'blobs');
-    const persistence = new FileSystemAgentRecordPersistence(wirePath, { blobsDir });
+    const persistence = new FileSystemAgentRecordPersistence(wirePath, {
+      blobStore: new BlobStore({ blobsDir }),
+    });
 
     const payload = 'X'.repeat(5000);
     const dataUri = `data:image/png;base64,${payload}`;

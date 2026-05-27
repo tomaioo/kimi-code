@@ -34,7 +34,7 @@ import type {
   LLMRequestLogContext,
   LLMStreamTiming,
 } from '../../loop';
-import { rehydrateMessagesBlobs } from '../records/blobref';
+import type { BlobStore } from '../records/blobref';
 import {
   applyCompletionBudget,
   type CompletionBudgetConfig,
@@ -64,12 +64,7 @@ export interface KosongLLMConfig {
    * final cap is applied to each request.
    */
   readonly completionBudgetConfig?: CompletionBudgetConfig | undefined;
-  /**
-   * Directory holding offloaded base64 blobs. When set, media URLs in
-   * messages are rehydrated from `blobref://` back to `data:` URIs before
-   * being sent to the LLM.
-   */
-  readonly blobsDir?: string | undefined;
+  readonly blobStore?: BlobStore | undefined;
 }
 
 export class KosongLLM implements LLM {
@@ -80,7 +75,7 @@ export class KosongLLM implements LLM {
   private readonly provider: ChatProvider;
   private readonly generate: GenerateFn;
   private readonly completionBudgetConfig: CompletionBudgetConfig | undefined;
-  private readonly blobsDir: string | undefined;
+  private readonly blobStore: BlobStore | undefined;
 
   constructor(config: KosongLLMConfig) {
     this.provider = config.provider;
@@ -89,13 +84,13 @@ export class KosongLLM implements LLM {
     this.capability = config.capability;
     this.generate = config.generate ?? kosongGenerate;
     this.completionBudgetConfig = config.completionBudgetConfig;
-    this.blobsDir = config.blobsDir;
+    this.blobStore = config.blobStore;
   }
 
   async chat(params: LLMChatParams): Promise<LLMChatResponse> {
     let messages = params.messages;
-    if (this.blobsDir !== undefined) {
-      messages = await rehydrateMessagesBlobs(params.messages, this.blobsDir);
+    if (this.blobStore !== undefined) {
+      messages = await this.blobStore.rehydrateMessages(params.messages);
     }
 
     let requestStartedAt = Date.now();
