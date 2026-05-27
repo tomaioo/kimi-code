@@ -21,6 +21,7 @@ export interface BlobStoreOptions {
 export class BlobStore {
   private readonly blobsDir: string;
   private readonly threshold: number;
+  private readonly cache = new Map<string, string>();
 
   constructor(options: BlobStoreOptions) {
     this.blobsDir = options.blobsDir;
@@ -32,19 +33,19 @@ export class BlobStore {
       case 'turn.prompt':
       case 'turn.steer':
         for (const part of record.input) {
-          await offloadContentPart(part, this.blobsDir, this.threshold);
+          await this.offloadContentPart(part);
         }
         break;
       case 'context.append_message':
         for (const part of record.message.content) {
-          await offloadContentPart(part, this.blobsDir, this.threshold);
+          await this.offloadContentPart(part);
         }
         break;
       case 'context.append_loop_event': {
         const event = record.event;
         if (event.type === 'tool.result' && typeof event.result.output !== 'string') {
           for (const part of event.result.output) {
-            await offloadContentPart(part, this.blobsDir, this.threshold);
+            await this.offloadContentPart(part);
           }
         }
         break;
@@ -59,19 +60,19 @@ export class BlobStore {
       case 'turn.prompt':
       case 'turn.steer':
         for (const part of record.input) {
-          await rehydrateContentPart(part, this.blobsDir);
+          await this.rehydrateContentPart(part);
         }
         break;
       case 'context.append_message':
         for (const part of record.message.content) {
-          await rehydrateContentPart(part, this.blobsDir);
+          await this.rehydrateContentPart(part);
         }
         break;
       case 'context.append_loop_event': {
         const event = record.event;
         if (event.type === 'tool.result' && typeof event.result.output !== 'string') {
           for (const part of event.result.output) {
-            await rehydrateContentPart(part, this.blobsDir);
+            await this.rehydrateContentPart(part);
           }
         }
         break;
@@ -87,7 +88,7 @@ export class BlobStore {
         if (msg.content.length === 0) return msg;
         const clone = structuredClone(msg) as Message;
         for (const part of clone.content) {
-          await rehydrateContentPart(part, this.blobsDir);
+          await this.rehydrateContentPart(part);
         }
         return {
           role: clone.role,
@@ -100,39 +101,100 @@ export class BlobStore {
       }),
     );
   }
-}
 
-async function offloadContentPart(
-  part: ContentPart,
-  blobsDir: string,
-  threshold: number,
-): Promise<void> {
-  const record = part as unknown as Record<string, unknown>;
-  for (const value of Object.values(record)) {
-    const mediaObj = asMediaContainer(value);
-    if (mediaObj === undefined) continue;
+  private async offloadContentPart(part: ContentPart): Promise<void> {
+    const record = part as unknown as Record<string, unknown>;
+    for (const value of Object.values(record)) {
+      const mediaObj = asMediaContainer(value);
+      if (mediaObj === undefined) continue;
 
-    const url = mediaObj.url;
-    if (typeof url !== 'string') continue;
+      const url = mediaObj.url;
+      if (typeof url !== 'string') continue;
 
-    const newUrl = await maybeOffloadString(url, blobsDir, threshold);
-    if (newUrl !== url) {
-      mediaObj.url = newUrl;
+      const newUrl = await this.maybeOffloadString(url);
+      if (newUrl !== url) {
+        mediaObj.url = newUrl;
+      }
     }
   }
-}
 
-async function rehydrateContentPart(part: ContentPart, blobsDir: string): Promise<void> {
-  const record = part as unknown as Record<string, unknown>;
-  for (const value of Object.values(record)) {
-    const mediaObj = asMediaContainer(value);
-    if (mediaObj === undefined) continue;
+  private async rehydrateContentPart(part: ContentPart): Promise<void> {
+    const record = part as unknown as Record<string, unknown>;
+    for (const value of Object.values(record)) {
+      const mediaObj = asMediaContainer(value);
+      if (mediaObj === undefined) continue;
 
-    const url = mediaObj.url;
-    if (typeof url !== 'string' || !isBlobRef(url)) continue;
+      const url = mediaObj.url;
+      if (typeof url !== 'string' || !isBlobRef(url)) continue;
 
-    const newUrl = await rehydrateBlobRefUrl(url, blobsDir);
-    mediaObj.url = newUrl ?? MISSING_MEDIA_PLACEHOLDER;
+      const newUrl = await this.rehydrateBlobRefUrl(url);
+      mediaObj.url = newUrl ?? MISSING_MEDIA_PLACEHOLDER;
+    }
+  }
+
+  private async rehydrateBlobRefUrl(url: string): Promise<string | undefined> {
+    const rest = url.slice(BLOBREF_PROTOCOL.length);
+    const semiIdx = rest.indexOf(';');
+    if (semiIdx === -1) {
+      return undefined;
+    }
+    const mimeType = rest.slice(0, semiIdx);
+    const hash = rest.slice(semiIdx + 1);
+    if (hash.length === 0) {
+      return undefined;
+    }
+    const payload = await this.readBlob(hash);
+    if (payload === undefined) {
+      return undefined;
+    }
+    return `data:${mimeType};base64,${payload}`;
+  }
+
+  private async readBlob(hash: string): Promise<string | undefined> {
+    const cached = this.cache.get(hash);
+    if (cached !== undefined) return cached;
+    const payload = await readFile(join(this.blobsDir, hash), 'utf8').catch(() => undefined);
+    if (payload !== undefined) {
+      this.cache.set(hash, payload);
+    }
+    return payload;
+  }
+
+  private async maybeOffloadString(value: string): Promise<string> {
+    if (value.startsWith(BLOBREF_PROTOCOL)) {
+      return value;
+    }
+    const match = DATA_URI_HEADER_RE.exec(value);
+    if (match === null) {
+      return value;
+    }
+    const mimeType = match[1]!;
+    const payload = value.slice(match[0].length);
+    if (payload.length < this.threshold) {
+      return value;
+    }
+    return this.writeBlob(mimeType, payload);
+  }
+
+  private async writeBlob(mimeType: string, base64Payload: string): Promise<string> {
+    await mkdir(this.blobsDir, { recursive: true, mode: 0o700 });
+    const hash = createHash('sha256').update(base64Payload, 'utf8').digest('hex');
+    const blobPath = join(this.blobsDir, hash);
+    try {
+      const fh = await open(blobPath, 'wx');
+      try {
+        await fh.writeFile(base64Payload, 'utf8');
+        await fh.sync();
+      } finally {
+        await fh.close();
+      }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      // EEXIST means the identical payload was already written; deduplication.
+      if (code !== 'EEXIST') throw error;
+    }
+    this.cache.set(hash, base64Payload);
+    return `${BLOBREF_PROTOCOL}${mimeType};${hash}`;
   }
 }
 
@@ -146,68 +208,6 @@ function downgradeMissingMedia(part: ContentPart): ContentPart {
     }
   }
   return part;
-}
-
-async function maybeOffloadString(
-  value: string,
-  blobsDir: string,
-  threshold: number,
-): Promise<string> {
-  if (value.startsWith(BLOBREF_PROTOCOL)) {
-    return value;
-  }
-  const match = DATA_URI_HEADER_RE.exec(value);
-  if (match === null) {
-    return value;
-  }
-  const mimeType = match[1]!;
-  const payload = value.slice(match[0].length);
-  if (payload.length < threshold) {
-    return value;
-  }
-  return writeBlob(blobsDir, mimeType, payload);
-}
-
-async function rehydrateBlobRefUrl(url: string, blobsDir: string): Promise<string | undefined> {
-  const rest = url.slice(BLOBREF_PROTOCOL.length);
-  const semiIdx = rest.indexOf(';');
-  if (semiIdx === -1) {
-    return undefined;
-  }
-  const mimeType = rest.slice(0, semiIdx);
-  const hash = rest.slice(semiIdx + 1);
-  if (hash.length === 0) {
-    return undefined;
-  }
-  const payload = await readFile(join(blobsDir, hash), 'utf8').catch(() => undefined);
-  if (payload === undefined) {
-    return undefined;
-  }
-  return `data:${mimeType};base64,${payload}`;
-}
-
-async function writeBlob(
-  blobsDir: string,
-  mimeType: string,
-  base64Payload: string,
-): Promise<string> {
-  await mkdir(blobsDir, { recursive: true, mode: 0o700 });
-  const hash = createHash('sha256').update(base64Payload, 'utf8').digest('hex');
-  const blobPath = join(blobsDir, hash);
-  try {
-    const fh = await open(blobPath, 'wx');
-    try {
-      await fh.writeFile(base64Payload, 'utf8');
-      await fh.sync();
-    } finally {
-      await fh.close();
-    }
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    // EEXIST means the identical payload was already written; deduplication.
-    if (code !== 'EEXIST') throw error;
-  }
-  return `${BLOBREF_PROTOCOL}${mimeType};${hash}`;
 }
 
 function asMediaContainer(value: unknown): { url: unknown } | undefined {

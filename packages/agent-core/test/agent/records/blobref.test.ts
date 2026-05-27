@@ -179,4 +179,57 @@ describe('blobref', () => {
     const firstMsg = hydrated[0]!;
     expect(firstMsg.content[0]).toEqual({ type: 'text', text: '[media missing]' });
   });
+
+  it('rehydrates from write-through cache after blob file is deleted', async () => {
+    const { store, blobsDir } = await makeStore();
+    const payload = 'E'.repeat(5000);
+    const dataUri = `data:image/png;base64,${payload}`;
+
+    const record: AgentRecord = {
+      type: 'turn.prompt',
+      input: [{ type: 'image_url', imageUrl: { url: dataUri } }],
+      origin: { kind: 'user' },
+    };
+
+    await store.offload(record);
+    const files = await readdir(blobsDir);
+    expect(files).toHaveLength(1);
+    await rm(join(blobsDir, files[0]!));
+
+    // Should still rehydrate because offload populated the cache.
+    await store.rehydrate(record);
+    const url = (record.input as unknown as [{ imageUrl: { url: string } }])[0].imageUrl.url;
+    expect(url).toBe(dataUri);
+  });
+
+  it('rehydrates from read cache after first disk read', async () => {
+    const { store, blobsDir } = await makeStore();
+    const payload = 'F'.repeat(5000);
+    const dataUri = `data:image/png;base64,${payload}`;
+
+    const record: AgentRecord = {
+      type: 'turn.prompt',
+      input: [{ type: 'image_url', imageUrl: { url: dataUri } }],
+      origin: { kind: 'user' },
+    };
+
+    await store.offload(record);
+    await store.rehydrate(record);
+
+    const files = await readdir(blobsDir);
+    expect(files).toHaveLength(1);
+    await rm(join(blobsDir, files[0]!));
+
+    // Second rehydrate (of a fresh record pointing to the same blobref)
+    // should still succeed because the first rehydrate populated the read cache.
+    const blobrefUrl = (record.input as unknown as [{ imageUrl: { url: string } }])[0].imageUrl.url;
+    const record2: AgentRecord = {
+      type: 'turn.prompt',
+      input: [{ type: 'image_url', imageUrl: { url: blobrefUrl } }],
+      origin: { kind: 'user' },
+    };
+    await store.rehydrate(record2);
+    const url2 = (record2.input as unknown as [{ imageUrl: { url: string } }])[0].imageUrl.url;
+    expect(url2).toBe(dataUri);
+  });
 });
