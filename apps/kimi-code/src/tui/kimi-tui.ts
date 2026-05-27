@@ -278,6 +278,7 @@ import { createTerminalState, type TerminalState } from './utils/terminal-state'
 import { installTerminalThemeTracking } from './utils/terminal-theme';
 import { detectTmuxKeyboardWarning } from './utils/tmux-keyboard';
 import { nextTranscriptId } from './utils/transcript-id';
+import { formatStepDebugTiming } from '#/utils/usage/debug-timing';
 
 export interface KimiTUIStartupInput {
   readonly cliOptions: CLIOptions;
@@ -1924,12 +1925,11 @@ export class KimiTUI {
   }
 
   // Finalizes live thinking output and moves the live pane to the next mode.
+  // onThinkingEnd() is safe to call even when no component exists (it no-ops
+  // when activeThinkingComponent is undefined), and clearing an already-empty
+  // thinkingDraft is harmless, so we can unconditionally clean up.
   private flushThinkingToTranscript(nextMode: LivePaneState['mode'] = 'idle'): void {
     this.flushStreamingUiUpdatesNow();
-    if (this.state.thinkingDraft.length === 0) {
-      this.patchLivePane({ mode: nextMode });
-      return;
-    }
     this.state.thinkingDraft = '';
     this.onThinkingEnd();
     this.patchLivePane({ mode: nextMode });
@@ -2991,6 +2991,7 @@ export class KimiTUI {
   // notice pointing at the config knob.
   private handleStepCompleted(event: TurnStepCompletedEvent): void {
     this.flushStreamingUiUpdatesNow();
+    this.maybeShowDebugTiming(event);
     if (event.finishReason !== 'max_tokens') return;
 
     // Scope the truncation marking to tool calls that belong to the
@@ -3026,6 +3027,12 @@ export class KimiTUI {
       ? 'If this limit is wrong for your model, set `max_output_size` on the model alias in your kimi-code config.'
       : undefined;
     this.showNotice(title, detail);
+  }
+
+  private maybeShowDebugTiming(event: TurnStepCompletedEvent): void {
+    if (process.env['KIMI_CODE_DEBUG'] !== '1') return;
+    const text = formatStepDebugTiming(event);
+    if (text !== undefined) this.showStatus(text);
   }
 
   private isAnthropicSessionActive(): boolean {
@@ -3709,6 +3716,9 @@ export class KimiTUI {
 
   // Creates or updates the live thinking transcript component.
   private onThinkingUpdate(fullText: string): void {
+    // Avoid creating a component whose spinner will never stop when the text
+    // is empty and there is no existing component to update.
+    if (fullText.length === 0 && this.state.activeThinkingComponent === undefined) return;
     if (this.state.activeThinkingComponent === undefined) {
       this.state.pendingAgentGroup = null;
       this.state.pendingReadGroup = null;
@@ -5504,7 +5514,10 @@ export class KimiTUI {
     }
 
     try {
-      await this.switchToSession(forked, `Session forked (${forked.id}).`);
+      await this.switchToSession(
+        forked,
+        `Session forked (${forked.id}). To return to the original session: kimi -r ${session.id}`,
+      );
     } catch (error) {
       const msg = formatErrorMessage(error);
       this.showError(`Failed to switch to forked session: ${msg}`);
