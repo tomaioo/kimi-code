@@ -8,8 +8,10 @@
  */
 
 import { writeFileSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { release as osRelease, type as osType } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import {
   Container,
@@ -98,6 +100,9 @@ import type {
 import chalk from 'chalk';
 
 import type { CLIOptions } from '#/cli/options';
+import { detectInstallSource } from '#/cli/update/source';
+import { detectShellEnvironment } from '#/utils/process/shell-env';
+import { toTerminalHyperlink } from '#/utils/terminal-hyperlink';
 import { MigrationScreenComponent, type MigrationScreenResult } from '#/migration/index';
 import { ClipboardMediaError, readClipboardMedia } from '#/utils/clipboard/clipboard-image';
 import type { GitLsFilesCache } from '#/utils/git/git-ls-files';
@@ -107,6 +112,7 @@ import { parseImageMeta } from '#/utils/image/image-mime';
 import { getInputHistoryFile } from '#/utils/paths';
 import { editInExternalEditor, resolveEditorCommand } from '#/utils/process/external-editor';
 import { detectFdPath } from '#/utils/process/fd-detect';
+import { buildExportMarkdown } from './utils/export-markdown';
 
 import {
   BUILTIN_SLASH_COMMANDS,
@@ -278,6 +284,7 @@ import { createTerminalState, type TerminalState } from './utils/terminal-state'
 import { installTerminalThemeTracking } from './utils/terminal-theme';
 import { detectTmuxKeyboardWarning } from './utils/tmux-keyboard';
 import { nextTranscriptId } from './utils/transcript-id';
+import { formatStepDebugTiming } from '#/utils/usage/debug-timing';
 
 export interface KimiTUIStartupInput {
   readonly cliOptions: CLIOptions;
@@ -1610,6 +1617,12 @@ export class KimiTUI {
       case 'fork':
         await this.handleForkCommand(args);
         return;
+      case 'export-md':
+        await this.handleExportMdCommand(args);
+        return;
+      case 'export-debug-zip':
+        await this.handleExportDebugZipCommand();
+        return;
       case 'login':
         await this.handleLoginCommand();
         return;
@@ -1949,12 +1962,11 @@ export class KimiTUI {
   }
 
   // Finalizes live thinking output and moves the live pane to the next mode.
+  // onThinkingEnd() is safe to call even when no component exists (it no-ops
+  // when activeThinkingComponent is undefined), and clearing an already-empty
+  // thinkingDraft is harmless, so we can unconditionally clean up.
   private flushThinkingToTranscript(nextMode: LivePaneState['mode'] = 'idle'): void {
     this.flushStreamingUiUpdatesNow();
-    if (this.state.thinkingDraft.length === 0) {
-      this.patchLivePane({ mode: nextMode });
-      return;
-    }
     this.state.thinkingDraft = '';
     this.onThinkingEnd();
     this.patchLivePane({ mode: nextMode });
@@ -3032,6 +3044,7 @@ export class KimiTUI {
   // notice pointing at the config knob.
   private handleStepCompleted(event: TurnStepCompletedEvent): void {
     this.flushStreamingUiUpdatesNow();
+    this.maybeShowDebugTiming(event);
     if (event.finishReason !== 'max_tokens') return;
 
     // Scope the truncation marking to tool calls that belong to the
@@ -3067,6 +3080,12 @@ export class KimiTUI {
       ? 'If this limit is wrong for your model, set `max_output_size` on the model alias in your kimi-code config.'
       : undefined;
     this.showNotice(title, detail);
+  }
+
+  private maybeShowDebugTiming(event: TurnStepCompletedEvent): void {
+    if (process.env['KIMI_CODE_DEBUG'] !== '1') return;
+    const text = formatStepDebugTiming(event);
+    if (text !== undefined) this.showStatus(text);
   }
 
   private isAnthropicSessionActive(): boolean {
@@ -3750,6 +3769,9 @@ export class KimiTUI {
 
   // Creates or updates the live thinking transcript component.
   private onThinkingUpdate(fullText: string): void {
+    // Avoid creating a component whose spinner will never stop when the text
+    // is empty and there is no existing component to update.
+    if (fullText.length === 0 && this.state.activeThinkingComponent === undefined) return;
     if (this.state.activeThinkingComponent === undefined) {
       this.state.pendingAgentGroup = null;
       this.state.pendingReadGroup = null;
@@ -5607,6 +5629,76 @@ export class KimiTUI {
     } catch (error) {
       const msg = formatErrorMessage(error);
       this.showError(`Failed to switch to forked session: ${msg}`);
+    }
+  }
+
+  private async handleExportMdCommand(args: string): Promise<void> {
+    const session = this.session;
+    if (session === undefined) {
+      this.showError(NO_ACTIVE_SESSION_MESSAGE);
+      return;
+    }
+
+    this.showStatus('Exporting session as Markdown…');
+    try {
+      const context = await session.getContext();
+      if (context.history.length === 0) {
+        this.showError('No messages to export.');
+        return;
+      }
+
+      const now = new Date();
+      const shortId = session.id.slice(0, 8);
+      const timestamp = now.toISOString().replaceAll(/[-:]/g, '').replace(/T/, '-').slice(0, 15);
+      const defaultName = `kimi-export-${shortId}-${timestamp}.md`;
+
+      const trimmedArgs = args.trim();
+      const outputPath = trimmedArgs.length > 0
+        ? resolve(trimmedArgs)
+        : resolve(this.state.appState.workDir, defaultName);
+
+      const md = buildExportMarkdown({
+        sessionId: session.id,
+        workDir: this.state.appState.workDir,
+        history: context.history,
+        tokenCount: context.tokenCount,
+        now,
+      });
+
+      await mkdir(dirname(outputPath), { recursive: true });
+      await writeFile(outputPath, md, 'utf-8');
+
+      const linked = toTerminalHyperlink(outputPath, pathToFileURL(outputPath).href);
+      this.showNotice(`Exported ${String(context.history.length)} messages`, linked);
+    } catch (error) {
+      const msg = formatErrorMessage(error);
+      this.showError(`Failed to export session: ${msg}`);
+    }
+  }
+
+  private async handleExportDebugZipCommand(): Promise<void> {
+    const session = this.session;
+    if (session === undefined) {
+      this.showError(NO_ACTIVE_SESSION_MESSAGE);
+      return;
+    }
+
+    this.showStatus('Exporting session…');
+    try {
+      const installSource = await detectInstallSource();
+      const shellEnv = detectShellEnvironment();
+      const result = await this.harness.exportSession({
+        id: session.id,
+        version: this.state.appState.version,
+        installSource,
+        shellEnv,
+        includeGlobalLog: true,
+      });
+      const linked = toTerminalHyperlink(result.zipPath, pathToFileURL(result.zipPath).href);
+      this.showNotice('Export complete', linked);
+    } catch (error) {
+      const msg = formatErrorMessage(error);
+      this.showError(`Failed to export session: ${msg}`);
     }
   }
 
