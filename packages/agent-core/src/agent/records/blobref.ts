@@ -204,6 +204,7 @@ async function writeBlob(
     }
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
+    // EEXIST means the identical payload was already written; deduplication.
     if (code !== 'EEXIST') throw error;
   }
   return `${BLOBREF_PROTOCOL}${mimeType};${hash}`;
