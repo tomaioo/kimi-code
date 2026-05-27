@@ -16,11 +16,18 @@ afterEach(async () => {
   }
 });
 
-async function makeStore(): Promise<{ store: BlobStore; blobsDir: string }> {
+async function makeStore(options?: { maxCacheSize?: number; threshold?: number }): Promise<{ store: BlobStore; blobsDir: string }> {
   const blobsDir = join(tmpdir(), `blobref-test-${randomBytes(6).toString('hex')}`);
   await mkdir(blobsDir, { recursive: true });
   cleanups.push(blobsDir);
-  return { store: new BlobStore({ blobsDir, threshold: 4096 }), blobsDir };
+  return {
+    store: new BlobStore({
+      blobsDir,
+      threshold: options?.threshold ?? 4096,
+      maxCacheSize: options?.maxCacheSize,
+    }),
+    blobsDir,
+  };
 }
 
 describe('blobref', () => {
@@ -231,5 +238,77 @@ describe('blobref', () => {
     await store.rehydrate(record2);
     const url2 = (record2.input as unknown as [{ imageUrl: { url: string } }])[0].imageUrl.url;
     expect(url2).toBe(dataUri);
+  });
+
+  it('evicts least-recently-used entries when cache size limit is exceeded', async () => {
+    const limit = 8; // bytes
+    const { store, blobsDir } = await makeStore({ maxCacheSize: limit, threshold: 1 });
+
+    const payloadA = 'A'.repeat(4); // 4 bytes
+    const payloadB = 'B'.repeat(4); // 4 bytes
+    const payloadC = 'C'.repeat(4); // 4 bytes
+
+    const recordA: AgentRecord = {
+      type: 'turn.prompt',
+      input: [{ type: 'image_url', imageUrl: { url: `data:image/png;base64,${payloadA}` } }],
+      origin: { kind: 'user' },
+    };
+    const recordB: AgentRecord = {
+      type: 'turn.prompt',
+      input: [{ type: 'image_url', imageUrl: { url: `data:image/png;base64,${payloadB}` } }],
+      origin: { kind: 'user' },
+    };
+    const recordC: AgentRecord = {
+      type: 'turn.prompt',
+      input: [{ type: 'image_url', imageUrl: { url: `data:image/png;base64,${payloadC}` } }],
+      origin: { kind: 'user' },
+    };
+
+    await store.offload(recordA);
+    await store.offload(recordB);
+
+    // Touch A so it becomes more recent than B.
+    const recordA_touch: AgentRecord = {
+      type: 'turn.prompt',
+      input: [{ type: 'image_url', imageUrl: { url: (recordA.input as unknown as [{ imageUrl: { url: string } }])[0].imageUrl.url } }],
+      origin: { kind: 'user' },
+    };
+    await store.rehydrate(recordA_touch);
+
+    // Adding C should evict B (the least-recently-used), not A.
+    await store.offload(recordC);
+
+    // Delete all files so only cache can satisfy rehydration.
+    const files = await readdir(blobsDir);
+    for (const f of files) {
+      await rm(join(blobsDir, f));
+    }
+
+    // A should still be cached because it was touched after B.
+    const recordA2: AgentRecord = {
+      type: 'turn.prompt',
+      input: [{ type: 'image_url', imageUrl: { url: (recordA.input as unknown as [{ imageUrl: { url: string } }])[0].imageUrl.url } }],
+      origin: { kind: 'user' },
+    };
+    await store.rehydrate(recordA2);
+    expect((recordA2.input as unknown as [{ imageUrl: { url: string } }])[0].imageUrl.url).toBe(`data:image/png;base64,${payloadA}`);
+
+    // B should have been evicted.
+    const recordB2: AgentRecord = {
+      type: 'turn.prompt',
+      input: [{ type: 'image_url', imageUrl: { url: (recordB.input as unknown as [{ imageUrl: { url: string } }])[0].imageUrl.url } }],
+      origin: { kind: 'user' },
+    };
+    await store.rehydrate(recordB2);
+    expect((recordB2.input as unknown as [{ imageUrl: { url: string } }])[0].imageUrl.url).toBe('[media missing]');
+
+    // C should still be cached.
+    const recordC2: AgentRecord = {
+      type: 'turn.prompt',
+      input: [{ type: 'image_url', imageUrl: { url: (recordC.input as unknown as [{ imageUrl: { url: string } }])[0].imageUrl.url } }],
+      origin: { kind: 'user' },
+    };
+    await store.rehydrate(recordC2);
+    expect((recordC2.input as unknown as [{ imageUrl: { url: string } }])[0].imageUrl.url).toBe(`data:image/png;base64,${payloadC}`);
   });
 });
