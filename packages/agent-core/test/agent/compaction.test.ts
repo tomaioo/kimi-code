@@ -86,21 +86,6 @@ describe('Agent compaction', () => {
     ).toBe(0);
   });
 
-  it('falls back to compacting everything when no intermediate split exists but the last message is splittable', () => {
-    const strategy = testCompactionStrategy();
-    const messages: Message[] = [
-      textMessage('user', 'inspect'),
-      {
-        role: 'assistant',
-        content: [],
-        toolCalls: [{ type: 'function', id: 'call_a', name: 'Lookup', arguments: '{}' }],
-      },
-      { role: 'tool', content: [{ type: 'text', text: 'result' }], toolCalls: [], toolCallId: 'call_a' },
-    ];
-
-    expect(strategy.computeCompactCount(messages)).toBe(messages.length);
-  });
-
   it('returns 0 when no intermediate split exists and the last message is also unsplittable', () => {
     const strategy = testCompactionStrategy();
     const messages: Message[] = [
@@ -681,6 +666,7 @@ describe('Agent compaction', () => {
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
     });
+    ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
     ctx.appendRichToolExchange();
     const compacted = new Promise<void>((resolve) => {
       ctx.emitter.once('context.apply_compaction', () => {
@@ -697,10 +683,18 @@ describe('Agent compaction', () => {
         {
           "text": "--- message 1 role=user ---
       text:
+        old user one
+
+      --- message 2 role=assistant ---
+      text:
+        old assistant one
+
+      --- message 3 role=user ---
+      text:
         inspect this image
       image_url: ms://image-1 (id=image-1)
 
-      --- message 2 role=assistant ---
+      --- message 4 role=assistant ---
       think:
         checking metadata
       text:
@@ -713,7 +707,7 @@ describe('Agent compaction', () => {
           "limit": 2
         }
 
-      --- message 3 role=tool toolCallId="call_lookup" ---
+      --- message 5 role=tool toolCallId="call_lookup" ---
       text:
         lookup result
       video_url: ms://video-1 (id=video-1)",

@@ -84,6 +84,9 @@ export class FullCompaction {
       this.compactionCountInTurn += 1;
     }
     if (this.compactionCountInTurn > this.strategy.maxCompactionPerTurn) return;
+    if (this.agent.records.restoring) {
+      return;
+    }
     const compactedCount = this.strategy.computeCompactCount(this.agent.context.history);
     if (compactedCount === 0) {
       throw new KimiError(ErrorCodes.COMPACTION_UNABLE, 'No prefix that can be compacted in current history.');
@@ -92,9 +95,7 @@ export class FullCompaction {
       type: 'full_compaction.begin',
       ...data,
     });
-    if (!this.agent.records.restoring) {
-      this.startCompactionWorker(data, compactedCount);
-    }
+    this.startCompactionWorker(data, compactedCount);
   }
 
   private startCompactionWorker(

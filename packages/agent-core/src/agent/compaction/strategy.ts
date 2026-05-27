@@ -100,10 +100,7 @@ export class DefaultCompactionStrategy implements CompactionStrategy {
       }
     }
 
-    if (bestN !== undefined) return bestN;
-    const last = messages.at(-1);
-    if (last && !cannotSplitAfter(last)) return messages.length;
-    return 0;
+    return bestN ?? 0;
   }
 
   reduceCompactOnOverflow(messages: readonly Message[]): number {
