@@ -48,24 +48,26 @@ const CURRENT_MARK = '← current';
 
 function wrapDescription(text: string, width: number): string[] {
   const maxWidth = Math.max(1, width);
-  const words = text
-    .trim()
-    .split(/\s+/)
-    .filter((word) => word.length > 0);
   const lines: string[] = [];
-  let current = '';
+  for (const paragraph of text.trim().split(/\r?\n/)) {
+    const words = paragraph
+      .trim()
+      .split(/\s+/)
+      .filter((word) => word.length > 0);
+    let current = '';
 
-  for (const word of words) {
-    const candidate = current.length === 0 ? word : `${current} ${word}`;
-    if (visibleWidth(candidate) <= maxWidth) {
-      current = candidate;
-      continue;
+    for (const word of words) {
+      const candidate = current.length === 0 ? word : `${current} ${word}`;
+      if (visibleWidth(candidate) <= maxWidth) {
+        current = candidate;
+        continue;
+      }
+      if (current.length > 0) lines.push(current);
+      current = visibleWidth(word) <= maxWidth ? word : truncateToWidth(word, maxWidth, '…');
     }
-    if (current.length > 0) lines.push(current);
-    current = visibleWidth(word) <= maxWidth ? word : truncateToWidth(word, maxWidth, '…');
-  }
 
-  if (current.length > 0) lines.push(current);
+    if (current.length > 0) lines.push(current);
+  }
   return lines;
 }
 

@@ -28,6 +28,11 @@ interface AutocompleteInternals {
   readonly autocompleteDebounceTimer?: ReturnType<typeof setTimeout>;
 }
 
+interface HistoryInternals {
+  history: string[];
+  historyIndex: number;
+}
+
 /**
  * Workaround for a pi-tui bug that surfaces when Kitty keyboard protocol
  * is active AND caps_lock is on. In that state terminals emit, e.g.,
@@ -138,6 +143,15 @@ export class CustomEditor extends Editor {
     // content. The right side mirrors with 3 padding columns and the right
     // border at the last column.
     super(tui, createEditorTheme(colors), { paddingX: 4 });
+  }
+
+  replaceHistory(entries: readonly string[]): void {
+    const history = this as unknown as HistoryInternals;
+    history.history = [];
+    history.historyIndex = -1;
+    for (const entry of entries) {
+      this.addToHistory(entry);
+    }
   }
 
   private hasAutocompleteActivity(): boolean {

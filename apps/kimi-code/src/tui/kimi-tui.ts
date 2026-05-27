@@ -307,7 +307,13 @@ export interface TUIStartupOptions {
   readonly startupNotice?: string;
 }
 
-export type TUIStartupState = 'pending' | 'ready' | 'picker';
+export type TUIStartupState = 'pending' | 'ready' | 'picker' | 'cross-workdir-confirm';
+
+interface PendingCrossWorkDirResume {
+  readonly sessionId: string;
+  readonly sessionWorkDir: string;
+  readonly currentWorkDir: string;
+}
 
 export interface KimiTUIOptions {
   initialAppState: AppState;
@@ -595,7 +601,8 @@ export class KimiTUI {
   private readonly skillCommandMap = new Map<string, string>();
   private readonly imageStore = new ImageAttachmentStore();
   private readonly fdPath: string | null = detectFdPath();
-  private readonly gitLsFilesCache: GitLsFilesCache;
+  private gitLsFilesCache: GitLsFilesCache;
+  private pendingCrossWorkDirResume: PendingCrossWorkDirResume | undefined;
   private sessionEventUnsubscribe: (() => void) | undefined;
   private pendingExit: PendingExit | null = null;
   private cancelInFlight: (() => void) | undefined;
@@ -727,12 +734,11 @@ export class KimiTUI {
     try {
       const file = getInputHistoryFile(this.state.appState.workDir);
       const entries = await loadInputHistory(file);
-      for (const entry of entries) {
-        this.state.editor.addToHistory(entry.content);
-      }
+      this.state.editor.replaceHistory(entries.map((entry) => entry.content));
       this.state.lastHistoryContent = entries.at(-1)?.content;
     } catch {
-      /* history is best-effort */
+      this.state.editor.replaceHistory([]);
+      this.state.lastHistoryContent = undefined;
     }
   }
 
@@ -812,10 +818,13 @@ export class KimiTUI {
   // transcript history should be replayed.
   private async initMainTui(): Promise<boolean> {
     const shouldReplayHistory = await this.init();
+    const awaitingCrossWorkDirConfirm = this.state.startupState === 'cross-workdir-confirm';
 
-    this.renderWelcome();
-    this.setupAutocomplete();
-    void this.loadPersistedInputHistory();
+    if (!awaitingCrossWorkDirConfirm) {
+      this.renderWelcome();
+      this.setupAutocomplete();
+      void this.loadPersistedInputHistory();
+    }
     this.state.editorContainer.clear();
     this.state.editorContainer.addChild(this.state.editor);
     this.state.ui.setFocus(this.state.editor);
@@ -841,6 +850,10 @@ export class KimiTUI {
       void this.bootstrapFromPicker();
       // resumeSession (fired on picker select) owns post-pick init; nothing
       // else to do here until the user makes a choice.
+      return;
+    }
+    if (this.state.startupState === 'cross-workdir-confirm') {
+      this.bootstrapCrossWorkDirResume();
       return;
     }
     if (shouldReplayHistory) {
@@ -891,12 +904,24 @@ export class KimiTUI {
         }
 
         if (startup.sessionFlag !== undefined) {
-          const sessions = await this.harness.listSessions({ workDir });
+          const sessions = await this.harness.listSessions({
+            workDir,
+            sessionId: startup.sessionFlag,
+          });
           const target = sessions.find((candidate) => candidate.id === startup.sessionFlag);
           if (target === undefined) {
             throw new Error(`Session "${startup.sessionFlag}" not found.`);
           }
-          session = await this.harness.resumeSession({ id: startup.sessionFlag });
+          if (target.workDir !== workDir) {
+            this.pendingCrossWorkDirResume = {
+              sessionId: target.id,
+              sessionWorkDir: target.workDir,
+              currentWorkDir: workDir,
+            };
+            this.state.startupState = 'cross-workdir-confirm';
+            return false;
+          }
+          session = await this.harness.resumeSession({ id: target.id });
           shouldReplayHistory = true;
         } else {
           const sessions = await this.harness.listSessions({ workDir });
@@ -2082,6 +2107,7 @@ export class KimiTUI {
 
   // Pulls runtime session status into the app state.
   private async syncRuntimeState(session: Session = this.requireSession()): Promise<void> {
+    await this.syncSessionWorkDir(session);
     const status = await session.getStatus();
     this.setAppState({
       sessionId: session.id,
@@ -2095,6 +2121,15 @@ export class KimiTUI {
       contextUsage: status.contextUsage,
       sessionTitle: session.summary?.title ?? null,
     });
+  }
+
+  private async syncSessionWorkDir(session: Session): Promise<void> {
+    if (this.state.appState.workDir === session.workDir) return;
+    process.chdir(session.workDir);
+    this.gitLsFilesCache = createGitLsFilesCache(session.workDir);
+    this.setAppState({ workDir: session.workDir });
+    this.setupAutocomplete();
+    await this.loadPersistedInputHistory();
   }
 
   // Applies current permission to the active session. Plan mode is applied by
@@ -2191,7 +2226,10 @@ export class KimiTUI {
   }
 
   // Switches to an existing session and replays its transcript.
-  private async resumeSession(targetSessionId: string): Promise<boolean> {
+  private async resumeSession(
+    targetSessionId: string,
+    applyStartupModel = false,
+  ): Promise<boolean> {
     if (targetSessionId === this.state.appState.sessionId) {
       this.showStatus('Already on this session.');
       return true;
@@ -2208,13 +2246,16 @@ export class KimiTUI {
     let session: Session;
     try {
       session = await this.harness.resumeSession({ id: targetSessionId });
+      if (applyStartupModel && this.options.startup.model !== undefined) {
+        await session.setModel(this.options.startup.model);
+      }
+      await this.switchToSession(session, `Resumed session (${session.id}).`);
     } catch (error) {
       const msg = formatErrorMessage(error);
       this.showError(`Failed to resume session ${targetSessionId}: ${msg}`);
       return false;
     }
 
-    await this.switchToSession(session, `Resumed session (${session.id}).`);
     return true;
   }
 
@@ -4501,6 +4542,61 @@ export class KimiTUI {
       this.hideSessionPicker();
       void this.stop();
     });
+  }
+
+  // Confirms an explicit `-r <id>` when the session belongs to another directory.
+  private bootstrapCrossWorkDirResume(): void {
+    const pending = this.pendingCrossWorkDirResume;
+    if (pending === undefined) {
+      void this.stop();
+      return;
+    }
+    const description = [
+      `Target directory: ${pending.sessionWorkDir}`,
+      `Current directory: ${pending.currentWorkDir}`,
+    ].join('\n');
+    this.mountEditorReplacement(
+      new ChoicePickerComponent({
+        title: 'Resume session from another directory',
+        hint: '↑↓ navigate · Enter select · Esc cancel',
+        options: [
+          {
+            value: 'resume',
+            label: 'Switch and resume',
+            description,
+          },
+          {
+            value: 'cancel',
+            label: 'Cancel',
+          },
+        ],
+        colors: this.state.theme.colors,
+        onSelect: (value) => {
+          if (value === 'resume') {
+            void this.confirmCrossWorkDirResume(pending);
+            return;
+          }
+          this.cancelCrossWorkDirResume();
+        },
+        onCancel: () => {
+          this.cancelCrossWorkDirResume();
+        },
+      }),
+    );
+  }
+
+  private async confirmCrossWorkDirResume(pending: PendingCrossWorkDirResume): Promise<void> {
+    const switched = await this.resumeSession(pending.sessionId, true);
+    if (!switched) return;
+    this.pendingCrossWorkDirResume = undefined;
+    this.state.startupState = 'ready';
+    this.restoreEditor();
+  }
+
+  private cancelCrossWorkDirResume(): void {
+    this.pendingCrossWorkDirResume = undefined;
+    this.restoreEditor();
+    void this.stop();
   }
 
   // Hides the session picker and restores the editor.

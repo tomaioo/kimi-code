@@ -109,3 +109,15 @@ describe('CustomEditor shortcut telemetry hooks', () => {
     expect(onUndo).toHaveBeenCalledOnce();
   });
 });
+
+describe('CustomEditor input history', () => {
+  it('replaces existing prompt history', () => {
+    const editor = makeEditor();
+
+    editor.addToHistory('old prompt');
+    editor.replaceHistory(['newer prompt']);
+    editor.handleInput('\u001B[A');
+
+    expect(editor.getText()).toBe('newer prompt');
+  });
+});

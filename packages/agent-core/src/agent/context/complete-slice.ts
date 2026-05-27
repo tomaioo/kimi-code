@@ -1,5 +1,6 @@
 import type { Message } from '@moonshot-ai/kosong';
 
+// Returns a safe slice boundary that does not split assistant tool calls from their tool results.
 export function sliceCompleteMessages(
   messages: readonly Message[],
   requestedEnd: number,

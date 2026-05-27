@@ -104,7 +104,8 @@ export interface ExportSessionResult {
 }
 
 export interface ListSessionsOptions {
-  readonly workDir: string;
+  readonly workDir?: string;
+  readonly sessionId?: string;
 }
 
 export interface GetConfigOptions {

@@ -15,8 +15,11 @@ import {
 interface StartupDriver {
   state: TUIState;
   init(): Promise<boolean>;
+  initMainTui(): Promise<boolean>;
+  finishStartup(shouldReplayHistory: boolean): Promise<void>;
   handleLoginCommand(): Promise<void>;
   handleLogoutCommand(): Promise<void>;
+  onExit?: (code?: number) => Promise<void>;
 }
 
 interface ThemeTrackingDriver extends StartupDriver {
@@ -75,6 +78,7 @@ function makeStartupInput(
 function makeSession(overrides: Record<string, unknown> = {}) {
   return {
     id: "ses-1",
+    workDir: "/tmp/proj-a",
     model: "k2",
     summary: { title: "Session title" },
     getStatus: vi.fn(async () => ({
@@ -92,6 +96,7 @@ function makeSession(overrides: Record<string, unknown> = {}) {
     setThinking: vi.fn(async () => {}),
     setPermission: vi.fn(async () => {}),
     setPlanMode: vi.fn(async () => {}),
+    getResumeState: vi.fn(() => undefined),
     onEvent: vi.fn(() => () => {}),
     listSkills: vi.fn(async () => []),
     close: vi.fn(async () => {}),
@@ -138,6 +143,8 @@ function makeDriver(harness: ReturnType<typeof makeHarness>, input: KimiTUIStart
 type InputListener = Parameters<TUIState["ui"]["addInputListener"]>[0];
 const DARK_OSC11_REPORT = "\u001B]11;rgb:2828/2c2c/3434\u0007";
 const LIGHT_OSC11_REPORT = "\u001B]11;rgb:fafa/fbfb/fcfc\u0007";
+const ENTER = String.fromCodePoint(13);
+const ESC = String.fromCodePoint(27);
 
 function captureInputListeners(driver: StartupDriver) {
   const listeners: InputListener[] = [];
@@ -207,6 +214,122 @@ describe("KimiTUI startup", () => {
     expect(harness.createSession).not.toHaveBeenCalled();
     expect(driver.state.startupState).toBe("ready");
     expect(driver.state.appState.sessionId).toBe("ses-latest");
+  });
+
+  it("resolves an explicit resume by session id under the current workdir first", async () => {
+    const session = makeSession({ id: "ses-target" });
+    const listSessions = vi.fn(async () => [
+      {
+        id: "ses-target",
+        workDir: "/tmp/proj-a",
+      },
+    ]);
+    const harness = makeHarness(session, { listSessions });
+    const driver = makeDriver(harness, makeStartupInput({ session: "ses-target" }));
+
+    await expect(driver.init()).resolves.toBe(true);
+
+    expect(listSessions).toHaveBeenCalledWith({
+      workDir: "/tmp/proj-a",
+      sessionId: "ses-target",
+    });
+    expect(listSessions).not.toHaveBeenCalledWith({ workDir: "/tmp/proj-a" });
+    expect(harness.resumeSession).toHaveBeenCalledWith({ id: "ses-target" });
+    expect(driver.state.appState.sessionId).toBe("ses-target");
+  });
+
+  it("reports not found when an explicit resume id is unknown globally", async () => {
+    const listSessions = vi.fn(async () => []);
+    const harness = makeHarness(makeSession(), { listSessions });
+    const driver = makeDriver(harness, makeStartupInput({ session: "ses-missing" }));
+
+    await expect(driver.init()).rejects.toThrow('Session "ses-missing" not found.');
+
+    expect(listSessions).toHaveBeenCalledWith({
+      workDir: "/tmp/proj-a",
+      sessionId: "ses-missing",
+    });
+    expect(harness.resumeSession).not.toHaveBeenCalled();
+  });
+
+  it("asks before resuming an explicit session from another workdir", async () => {
+    const session = makeSession({ id: "ses-other", workDir: "/tmp/proj-b" });
+    const harness = makeHarness(session, {
+      listSessions: vi.fn(async () => [
+        {
+          id: "ses-other",
+          title: "Other project",
+          workDir: "/tmp/proj-b",
+        },
+      ]),
+    });
+    const driver = makeDriver(harness, makeStartupInput({ session: "ses-other" }));
+
+    const shouldReplayHistory = await driver.initMainTui();
+    expect(shouldReplayHistory).toBe(false);
+
+    expect(harness.resumeSession).not.toHaveBeenCalled();
+    expect(driver.state.startupState).toBe("cross-workdir-confirm");
+    expect(driver.state.transcriptContainer.render(120).join("\n")).not.toContain(
+      "Welcome to Kimi Code",
+    );
+
+    await driver.finishStartup(shouldReplayHistory);
+    const panel = driver.state.editorContainer.children[0] as unknown as {
+      render(width: number): string[];
+      handleInput(data: string): void;
+    };
+    const output = panel.render(120).join("\n");
+    expect(output).toContain("Resume session from another directory");
+    expect(output).not.toContain("Session: ses-other");
+    expect(output).toContain("Target directory: /tmp/proj-b");
+    expect(output).toContain("Current directory: /tmp/proj-a");
+    expect(output).not.toContain("Other project");
+
+    const chdir = vi.spyOn(process, "chdir").mockImplementation(() => {});
+    try {
+      panel.handleInput(ENTER);
+
+      await vi.waitFor(() => {
+        expect(harness.resumeSession).toHaveBeenCalledWith({ id: "ses-other" });
+        expect(driver.state.startupState).toBe("ready");
+      });
+      expect(chdir).toHaveBeenCalledWith("/tmp/proj-b");
+      expect(driver.state.appState).toMatchObject({
+        sessionId: "ses-other",
+        workDir: "/tmp/proj-b",
+      });
+    } finally {
+      chdir.mockRestore();
+    }
+  });
+
+  it("exits without resuming when cross-workdir resume is cancelled", async () => {
+    const harness = makeHarness(makeSession(), {
+      listSessions: vi.fn(async () => [
+        {
+          id: "ses-other",
+          workDir: "/tmp/proj-b",
+        },
+      ]),
+    });
+    const driver = makeDriver(harness, makeStartupInput({ session: "ses-other" }));
+    const onExit = vi.fn(async () => {});
+    driver.onExit = onExit;
+    vi.spyOn(driver.state.ui, "stop").mockImplementation(() => {});
+
+    await expect(driver.init()).resolves.toBe(false);
+    await driver.finishStartup(false);
+    const panel = driver.state.editorContainer.children[0] as unknown as {
+      handleInput(data: string): void;
+    };
+    panel.handleInput(ESC);
+
+    await vi.waitFor(() => {
+      expect(onExit).toHaveBeenCalled();
+    });
+    expect(harness.resumeSession).not.toHaveBeenCalled();
+    expect(harness.createSession).not.toHaveBeenCalled();
   });
 
   it("passes the CLI model override when creating a fresh startup session", async () => {
@@ -695,7 +818,7 @@ describe("KimiTUI startup", () => {
 
   it("starts TUI without replaying when an explicit resume needs OAuth login", async () => {
     const harness = makeHarness(makeSession(), {
-      listSessions: vi.fn(async () => [{ id: "ses-target" }]),
+      listSessions: vi.fn(async () => [{ id: "ses-target", workDir: "/tmp/proj-a" }]),
       resumeSession: vi.fn(async () => {
         throw loginRequiredError();
       }),
