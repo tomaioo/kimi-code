@@ -242,8 +242,10 @@ describe('Agent compaction', () => {
         duration_ms: expect.any(Number),
         compacted_count: 2,
         retry_count: 0,
-        llm_input_tokens: 468,
-        llm_output_tokens: 8,
+        inputOther: 468,
+        output: 8,
+        inputCacheRead: 0,
+        inputCacheCreation: 0,
       },
     });
     await ctx.expectResumeMatches();
@@ -920,6 +922,130 @@ describe('Agent compaction', () => {
       }),
     });
     await ctx.expectResumeMatches();
+  });
+
+  it('keeps a deferred system reminder behind an unresolved tool exchange across compaction', async () => {
+    const ctx = testAgent();
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
+    });
+    ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+    ctx.appendUnresolvedToolExchange(0);
+    ctx.agent.context.appendSystemReminder('host note', {
+      kind: 'injection',
+      variant: 'host',
+    });
+
+    // Tool exchange is open, so the reminder is deferred — not yet in history.
+    expect(ctx.agent.context.history.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+    ]);
+
+    const compacted = ctx.once('context.apply_compaction');
+    ctx.mockNextResponse({ type: 'text', text: 'Compacted with open tools.' });
+    await ctx.rpc.beginCompaction({});
+    await compacted;
+
+    // Compaction preserves the in-flight tool exchange in recent; the deferred
+    // reminder still cannot land because the tool exchange is still open.
+    expect(ctx.agent.context.history.map((m) => m.role)).toEqual([
+      'assistant',
+      'user',
+      'assistant',
+    ]);
+
+    // Closing the exchange flushes the deferred reminder to history.
+    ctx.dispatch({
+      type: 'context.append_loop_event',
+      event: {
+        type: 'tool.result',
+        parentUuid: 'call_unresolved_one',
+        toolCallId: 'call_unresolved_one',
+        result: { output: 'one result' },
+      },
+    });
+    ctx.dispatch({
+      type: 'context.append_loop_event',
+      event: {
+        type: 'tool.result',
+        parentUuid: 'call_unresolved_two',
+        toolCallId: 'call_unresolved_two',
+        result: { output: 'two result' },
+      },
+    });
+
+    expect(ctx.agent.context.history.map((m) => m.role)).toEqual([
+      'assistant',
+      'user',
+      'assistant',
+      'tool',
+      'tool',
+      'user',
+    ]);
+    expect(ctx.agent.context.history.at(-1)?.content).toEqual([
+      { type: 'text', text: '<system-reminder>\nhost note\n</system-reminder>' },
+    ]);
+  });
+
+  it('keeps a deferred system reminder behind a partially resolved tool exchange across compaction', async () => {
+    const ctx = testAgent();
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
+    });
+    ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+    ctx.appendUnresolvedToolExchange(1);
+    ctx.agent.context.appendSystemReminder('host note', {
+      kind: 'injection',
+      variant: 'host',
+    });
+
+    // One tool result has landed but the second is still pending — reminder defers.
+    expect(ctx.agent.context.history.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+      'tool',
+    ]);
+
+    const compacted = ctx.once('context.apply_compaction');
+    ctx.mockNextResponse({ type: 'text', text: 'Compacted with partial tools.' });
+    await ctx.rpc.beginCompaction({});
+    await compacted;
+
+    expect(ctx.agent.context.history.map((m) => m.role)).toEqual([
+      'assistant',
+      'user',
+      'assistant',
+      'tool',
+    ]);
+
+    ctx.dispatch({
+      type: 'context.append_loop_event',
+      event: {
+        type: 'tool.result',
+        parentUuid: 'call_unresolved_two',
+        toolCallId: 'call_unresolved_two',
+        result: { output: 'two result' },
+      },
+    });
+
+    expect(ctx.agent.context.history.map((m) => m.role)).toEqual([
+      'assistant',
+      'user',
+      'assistant',
+      'tool',
+      'tool',
+      'user',
+    ]);
+    expect(ctx.agent.context.history.at(-1)?.content).toEqual([
+      { type: 'text', text: '<system-reminder>\nhost note\n</system-reminder>' },
+    ]);
   });
 
   it('fails the turn with compaction.unable when auto compaction has no compactable prefix', async () => {
