@@ -83,6 +83,7 @@ function makeStartupInput(): KimiTUIStartupInput {
 function makeSession(overrides: Record<string, unknown> = {}) {
   return {
     id: 'ses-1',
+    workDir: '/tmp/proj-a',
     model: 'k2',
     summary: { title: null },
     prompt: vi.fn(async () => {}),

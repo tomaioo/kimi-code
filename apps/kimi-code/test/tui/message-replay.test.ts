@@ -117,6 +117,7 @@ function makeSession(
   const agent = baseAgentState(replay, overrides);
   return {
     id: 'ses-replay',
+    workDir: '/tmp/proj-a',
     model: 'k2',
     summary: { title: null },
     getStatus: vi.fn(async () => ({
