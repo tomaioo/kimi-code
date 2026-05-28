@@ -71,7 +71,7 @@ export class DefaultCompactionStrategy implements CompactionStrategy {
     if (source === 'manual') {
       for (let i = messages.length - 1; i > 0; i--) {
         if (canSplitAfter(messages, i)) {
-          return i;
+          return i + 1;
         }
       }
       return 0;
