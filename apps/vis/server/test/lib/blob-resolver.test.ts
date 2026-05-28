@@ -3,7 +3,7 @@ import { resolveBlobRefUrl, isSafeBlobHash, rehydrateWireEntries } from '../../s
 
 describe('blob-resolver', () => {
   describe('resolveBlobRefUrl', () => {
-    it('converts a well-formed blobref into a vis blob route', () => {
+    it('converts a well-formed blobref into a relative route by default', () => {
       const url = resolveBlobRefUrl(
         'blobref:image/png;abc123def456',
         'sess-1',
@@ -11,6 +11,18 @@ describe('blob-resolver', () => {
       );
       expect(url).toBe(
         '/api/sessions/sess-1/blobs/abc123def456?agent=main&mime=image%2Fpng',
+      );
+    });
+
+    it('returns an absolute URL when baseUrl is provided', () => {
+      const url = resolveBlobRefUrl(
+        'blobref:image/png;abc123def456',
+        'sess-1',
+        'main',
+        'http://localhost:3001',
+      );
+      expect(url).toBe(
+        'http://localhost:3001/api/sessions/sess-1/blobs/abc123def456?agent=main&mime=image%2Fpng',
       );
     });
 
@@ -66,10 +78,10 @@ describe('blob-resolver', () => {
 
       rehydrateWireEntries(entries, 'sess-1', 'main');
 
-      expect((entries[0].data as any).input[0].imageUrl.url).toBe(
+      expect((entries[0]!.data as any).input[0].imageUrl.url).toBe(
         '/api/sessions/sess-1/blobs/hashA?agent=main&mime=image%2Fpng',
       );
-      expect((entries[0].raw as any).input[0].imageUrl.url).toBe(
+      expect((entries[0]!.raw as any).input[0].imageUrl.url).toBe(
         'blobref:image/png;hashA',
       );
     });
@@ -93,9 +105,28 @@ describe('blob-resolver', () => {
 
       rehydrateWireEntries(entries, 'sess-2', 'sub-1');
 
-      const parts = (entries[0].data as any).event.result.output;
+      const parts = (entries[0]!.data as any).event.result.output;
       expect(parts[0].audioUrl.url).toBe(
         '/api/sessions/sess-2/blobs/hashB?agent=sub-1&mime=audio%2Fwav',
+      );
+    });
+
+    it('resolves blobrefs to absolute URLs when baseUrl is provided', () => {
+      const data: Record<string, unknown> = {
+        type: 'turn.prompt',
+        input: [
+          {
+            type: 'image_url',
+            imageUrl: { url: 'blobref:image/png;hashC' },
+          },
+        ],
+      };
+      const entries = [{ lineNo: 1, data: data as any, raw: {} }];
+
+      rehydrateWireEntries(entries, 'sess-3', 'main', 'http://localhost:3001');
+
+      expect((entries[0]!.data as any).input[0].imageUrl.url).toBe(
+        'http://localhost:3001/api/sessions/sess-3/blobs/hashC?agent=main&mime=image%2Fpng',
       );
     });
 
@@ -103,7 +134,7 @@ describe('blob-resolver', () => {
       const data = { type: 'config.update', cwd: '/tmp' };
       const entries = [{ lineNo: 1, data: data as any, raw: {} }];
       rehydrateWireEntries(entries, 's', 'a');
-      expect(entries[0].data).toEqual(data);
+      expect(entries[0]!.data).toEqual(data);
     });
   });
 });

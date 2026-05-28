@@ -12,6 +12,7 @@ export function resolveBlobRefUrl(
   url: string,
   sessionId: string,
   agentId: string,
+  baseUrl: string = '',
 ): string {
   if (!isBlobRef(url)) return url;
   const rest = url.slice(BLOBREF_PROTOCOL.length);
@@ -20,7 +21,8 @@ export function resolveBlobRefUrl(
   const mimeType = rest.slice(0, semiIdx);
   const hash = rest.slice(semiIdx + 1);
   if (hash.length === 0) return url;
-  return `/api/sessions/${encodeURIComponent(sessionId)}/blobs/${encodeURIComponent(hash)}?agent=${encodeURIComponent(agentId)}&mime=${encodeURIComponent(mimeType)}`;
+  const path = `/api/sessions/${encodeURIComponent(sessionId)}/blobs/${encodeURIComponent(hash)}?agent=${encodeURIComponent(agentId)}&mime=${encodeURIComponent(mimeType)}`;
+  return baseUrl ? `${baseUrl}${path}` : path;
 }
 
 /** Walk every record in a wire and replace blobref URLs with vis-server
@@ -30,9 +32,10 @@ export function rehydrateWireEntries(
   entries: readonly WireEntry[],
   sessionId: string,
   agentId: string,
+  baseUrl: string = '',
 ): void {
   for (const entry of entries) {
-    rehydrateRecord(entry.data as Record<string, unknown>, sessionId, agentId);
+    rehydrateRecord(entry.data as Record<string, unknown>, sessionId, agentId, baseUrl);
   }
 }
 
@@ -40,15 +43,16 @@ function rehydrateRecord(
   record: Record<string, unknown>,
   sessionId: string,
   agentId: string,
+  baseUrl: string,
 ): void {
   const type = record['type'];
   if (type === 'turn.prompt' || type === 'turn.steer') {
-    rehydrateParts(record['input'] as unknown as ContentPart[], sessionId, agentId);
+    rehydrateParts(record['input'] as unknown as ContentPart[], sessionId, agentId, baseUrl);
     return;
   }
   if (type === 'context.append_message') {
     const message = record['message'] as { content: ContentPart[] };
-    rehydrateParts(message.content, sessionId, agentId);
+    rehydrateParts(message.content, sessionId, agentId, baseUrl);
     return;
   }
   if (type === 'context.append_loop_event') {
@@ -56,10 +60,10 @@ function rehydrateRecord(
     if (event['type'] === 'tool.result') {
       const result = event['result'] as Record<string, unknown>;
       if (typeof result['output'] !== 'string') {
-        rehydrateParts(result['output'] as ContentPart[], sessionId, agentId);
+        rehydrateParts(result['output'] as ContentPart[], sessionId, agentId, baseUrl);
       }
     } else if (event['type'] === 'content.part') {
-      rehydrateParts([event['part'] as ContentPart], sessionId, agentId);
+      rehydrateParts([event['part'] as ContentPart], sessionId, agentId, baseUrl);
     }
     return;
   }
@@ -69,17 +73,18 @@ function rehydrateParts(
   parts: ContentPart[],
   sessionId: string,
   agentId: string,
+  baseUrl: string,
 ): void {
   for (const part of parts) {
     switch (part.type) {
       case 'image_url':
-        part.imageUrl.url = resolveBlobRefUrl(part.imageUrl.url, sessionId, agentId);
+        part.imageUrl.url = resolveBlobRefUrl(part.imageUrl.url, sessionId, agentId, baseUrl);
         break;
       case 'audio_url':
-        part.audioUrl.url = resolveBlobRefUrl(part.audioUrl.url, sessionId, agentId);
+        part.audioUrl.url = resolveBlobRefUrl(part.audioUrl.url, sessionId, agentId, baseUrl);
         break;
       case 'video_url':
-        part.videoUrl.url = resolveBlobRefUrl(part.videoUrl.url, sessionId, agentId);
+        part.videoUrl.url = resolveBlobRefUrl(part.videoUrl.url, sessionId, agentId, baseUrl);
         break;
       default:
         break;

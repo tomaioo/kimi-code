@@ -78,7 +78,7 @@ describe('wire-reader', () => {
       // written" view in the detail panel relies on.
       const rawMsg = (entry.raw as { message: { toolCalls: Array<{ function: unknown; name?: unknown }> } }).message;
       expect(rawMsg.toolCalls[0]).toHaveProperty('function');
-      expect(rawMsg.toolCalls[0].function).toEqual({ name: 'Read', arguments: '{"path":"/x"}' });
+      expect(rawMsg.toolCalls[0]!.function).toEqual({ name: 'Read', arguments: '{"path":"/x"}' });
       expect(rawMsg.toolCalls[0]).not.toHaveProperty('name');
     } finally {
       await rm(dir, { recursive: true, force: true });

@@ -29,7 +29,8 @@ export function wireRoute(): Hono {
       const result = await readAgentWire(
         join(detail.sessionDir, 'agents', agentId, 'wire.jsonl'),
       );
-      rehydrateWireEntries(result.records, id, agentId);
+      const baseUrl = new URL(c.req.url).origin;
+      rehydrateWireEntries(result.records, id, agentId, baseUrl);
       return c.json({
         sessionId: id,
         agentId,

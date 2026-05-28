@@ -27,7 +27,8 @@ export function contextRoute(): Hono {
       const wire = await readAgentWire(
         join(detail.sessionDir, 'agents', agentId, 'wire.jsonl'),
       );
-      rehydrateWireEntries(wire.records, id, agentId);
+      const baseUrl = new URL(c.req.url).origin;
+      rehydrateWireEntries(wire.records, id, agentId, baseUrl);
       const proj = projectContext(wire.records);
       return c.json({
         sessionId: id,

@@ -29,13 +29,7 @@ export function blobsRoute(home: string = KIMI_CODE_HOME): Hono {
         404,
       );
     }
-    const blobPath = join(
-      detail.sessionDir,
-      'agents',
-      agentId,
-      'blobs',
-      hash,
-    );
+    const blobPath = join(agent.homedir, 'blobs', hash);
     let content: Buffer;
     try {
       content = await readFile(blobPath);
