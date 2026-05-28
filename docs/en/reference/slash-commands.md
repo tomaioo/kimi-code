@@ -32,6 +32,8 @@ Some commands are only available in the idle state. Running them while the sessi
 | `/title [<text>]` | `/rename` | Without arguments, show the current session title; with an argument, set it as the new title (up to 200 characters). | Yes |
 | `/compact [<instruction>]` | — | Compact the current conversation context to free up token usage; optionally pass a custom instruction telling the model what to preserve during compaction. | No |
 | `/init` | — | Analyze the current codebase and generate `AGENTS.md`. | No |
+| `/export-md [<path>]` | `/export` | Export the current session as a Markdown file. With no argument, writes to `kimi-export-<short-id>-<timestamp>.md` in the working directory; pass a path to choose the output location. | No |
+| `/export-debug-zip` | — | Export the current session as a debug ZIP archive (mirrors [`kimi export`](./kimi-command.md#kimi-export)). The archive always includes the active global diagnostic log. | No |
 
 ## Mode and runtime control
 
@@ -53,6 +55,7 @@ Some commands are only available in the idle state. Running them while the sessi
 | `/usage` | — | Show token usage, context consumption, and quota information. | Yes |
 | `/status` | — | Show the current session runtime status, including version, model, working directory, and permission mode. | Yes |
 | `/mcp` | — | List the MCP servers in the current session and their connection status. | Yes |
+| `/plugins` | — | Open the interactive plugin manager for user/global installs: install, inspect, enable, disable, confirm removal, reload, browse the official marketplace, and toggle plugin MCP servers. Shortcut subcommands remain available. | Yes |
 | `/version` | — | Show the Kimi Code CLI version number. | Yes |
 | `/feedback` | — | Submit feedback to help improve Kimi Code CLI. | Yes |
 

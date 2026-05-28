@@ -1,4 +1,4 @@
-import { ErrorCodes, KimiError, type KimiErrorCode } from '@moonshot-ai/agent-core';
+import { ErrorCodes, KimiError, type AgentContextData, type KimiErrorCode } from '@moonshot-ai/agent-core';
 import { type ApprovalHandler, type Event, type QuestionHandler } from '#/events';
 import type { SDKRpcClient } from '#/rpc';
 import type {
@@ -7,7 +7,10 @@ import type {
   McpServerInfo,
   McpStartupMetrics,
   PermissionMode,
+  PluginInfo,
+  PluginSummary,
   PromptInput,
+  ReloadSummary,
   ResumedSessionState,
   SessionPlan,
   SessionStatus,
@@ -163,6 +166,11 @@ export class Session {
     await this.rpc.cancelCompaction({ sessionId: this.id });
   }
 
+  async getContext(): Promise<AgentContextData> {
+    this.ensureOpen();
+    return this.rpc.getContext({ sessionId: this.id });
+  }
+
   async getUsage(): Promise<SessionUsage> {
     this.ensureOpen();
     return this.rpc.getUsage({ sessionId: this.id });
@@ -273,6 +281,45 @@ export class Session {
   async reconnectMcpServer(name: string): Promise<void> {
     this.ensureOpen();
     await this.rpc.reconnectMcpServer({ sessionId: this.id, name });
+  }
+
+  async listPlugins(): Promise<readonly PluginSummary[]> {
+    this.ensureOpen();
+    return this.rpc.listPlugins();
+  }
+
+  async installPlugin(source: string): Promise<PluginSummary> {
+    this.ensureOpen();
+    return this.rpc.installPlugin(source);
+  }
+
+  async setPluginEnabled(id: string, enabled: boolean): Promise<void> {
+    this.ensureOpen();
+    await this.rpc.setPluginEnabled(id, enabled);
+  }
+
+  async setPluginMcpServerEnabled(
+    id: string,
+    server: string,
+    enabled: boolean,
+  ): Promise<void> {
+    this.ensureOpen();
+    await this.rpc.setPluginMcpServerEnabled(id, server, enabled);
+  }
+
+  async removePlugin(id: string): Promise<void> {
+    this.ensureOpen();
+    await this.rpc.removePlugin(id);
+  }
+
+  async reloadPlugins(): Promise<ReloadSummary> {
+    this.ensureOpen();
+    return this.rpc.reloadPlugins();
+  }
+
+  async getPluginInfo(id: string): Promise<PluginInfo> {
+    this.ensureOpen();
+    return this.rpc.getPluginInfo(id);
   }
 
   async activateSkill(name: string, args?: string | undefined): Promise<void> {

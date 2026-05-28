@@ -17,6 +17,8 @@ Project entries override user-level entries with the same name.
 
 The easiest entry point is running `/mcp-config` in the TUI, which guides you through adding, editing, or removing servers. To check connection status, run `/mcp`.
 
+Plugins can also declare MCP servers in `kimi.plugin.json` or `.kimi-plugin/plugin.json`. Plugin-declared servers are enabled by default but only start in new sessions; disable or re-enable them from `/plugins` or with `/plugins mcp disable|enable <plugin-id> <server>`, then start a new session. See [Plugins](./plugins.md) for details.
+
 The top-level shape of `mcp.json` is:
 
 ```json
@@ -54,7 +56,7 @@ Stdio entries in a project-level `.kimi-code/mcp.json` execute local commands wh
 
 ## Tool naming and permissions
 
-MCP tools are exposed using the naming convention `mcp__<server>__<tool>`. Permission matching supports `*` and `**` wildcards, so `mcp__github__*` covers every tool from the `github` server.
+MCP tools are exposed using the naming convention `mcp__<server>__<tool>`. Permission matching supports `*` and `**` wildcards in tool names, so `mcp__github__*` covers every tool from the `github` server. MCP tool arguments are not part of permission matching; allow or deny the exact MCP tool name, or use a tool-name wildcard.
 
 Calls that do not match any rule trigger an approval request. Choosing "Approve for this session" in the approval prompt auto-approves subsequent matching calls.
 

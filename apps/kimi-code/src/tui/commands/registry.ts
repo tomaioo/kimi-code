@@ -69,6 +69,13 @@ export const BUILTIN_SLASH_COMMANDS = [
     availability: 'always',
   },
   {
+    name: 'plugins',
+    aliases: [],
+    description: 'Manage plugins',
+    priority: 60,
+    availability: 'always',
+  },
+  {
     name: 'compact',
     aliases: [],
     description: 'Compact the conversation context',
@@ -143,6 +150,18 @@ export const BUILTIN_SLASH_COMMANDS = [
     name: 'connect',
     aliases: [],
     description: 'Connect a provider from a model catalog',
+    priority: 40,
+  },
+  {
+    name: 'export-md',
+    aliases: ['export'],
+    description: 'Export current session as a Markdown file',
+    priority: 40,
+  },
+  {
+    name: 'export-debug-zip',
+    aliases: [],
+    description: 'Export current session as a debug ZIP archive',
     priority: 40,
   },
   {

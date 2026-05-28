@@ -32,6 +32,8 @@
 | `/title [<text>]` | `/rename` | 不带参数时显示当前会话标题；带参数时将其设置为新标题（最长 200 个字符）。 | 是 |
 | `/compact [<instruction>]` | — | 压缩当前对话上下文，释放 token 占用；可选附带一段自定义指令，提示模型在压缩时保留哪些信息。 | 否 |
 | `/init` | — | 分析当前代码库并生成 `AGENTS.md`。 | 否 |
+| `/export-md [<path>]` | `/export` | 将当前会话导出为 Markdown 文件。不带参数时写入工作目录下的 `kimi-export-<short-id>-<timestamp>.md`，传入路径可指定输出位置。 | 否 |
+| `/export-debug-zip` | — | 将当前会话导出为调试用的 ZIP 压缩包（与 [`kimi export`](./kimi-command.md#kimi-export) 行为一致）。压缩包始终包含当前活动的全局诊断日志。 | 否 |
 
 ## 模式与运行控制
 
@@ -53,6 +55,7 @@
 | `/usage` | — | 显示 token 用量、上下文占用以及配额信息。 | 是 |
 | `/status` | — | 显示当前会话运行时状态，包括版本、模型、工作目录和权限模式等。 | 是 |
 | `/mcp` | — | 列出当前会话中的 MCP server 及其连接状态。 | 是 |
+| `/plugins` | — | 打开面向 user/global（用户全局）安装的交互式 plugin 管理器，用于安装、查看、启用、禁用、确认移除、重载、浏览官方 marketplace，以及启用或禁用 plugin MCP servers；快捷子命令仍可使用。 | 是 |
 | `/version` | — | 显示 Kimi Code CLI 版本号。 | 是 |
 | `/feedback` | — | 提交反馈以改进 Kimi Code CLI。 | 是 |
 
