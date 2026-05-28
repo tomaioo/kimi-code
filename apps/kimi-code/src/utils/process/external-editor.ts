@@ -9,6 +9,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,10 +40,15 @@ export async function editInExternalEditor(
   const file = join(dir, 'prompt.md');
   await writeFile(file, initialText, 'utf-8');
   try {
-    const code = await new Promise<number>((resolve, reject) => {
-      const shellCmd = `${command} ${shellQuote(file)}`;
-      const child = spawn('/bin/sh', ['-c', shellCmd], { stdio: 'inherit' });
-      child.on('exit', (c) =>{  resolve(c ?? 0); });
+      const code = await new Promise<number>((resolve, reject) => {
+      const args = parseCommand(command);
+      if (args.length === 0) {
+        reject(new Error('Empty editor command'));
+        return;
+      }
+      const [cmd, ...cmdArgs] = args;
+      const child = spawn(cmd, [...cmdArgs, file], { stdio: 'inherit' });
+      child.on('exit', (c) => { resolve(c ?? 0); });
       child.on('error', reject);
     });
     if (code !== 0) return undefined;
@@ -54,7 +60,34 @@ export async function editInExternalEditor(
   }
 }
 
-function shellQuote(path: string): string {
-  // Single-quote and escape any embedded single quotes.
-  return `'${path.replaceAll('\'', "'\\''")}'`;
+function parseCommand(command: string): string[] {
+  const args: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  let quoteChar = '';
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    if (inQuotes) {
+      if (char === quoteChar) {
+        inQuotes = false;
+        quoteChar = '';
+      } else {
+        current += char;
+      }
+    } else if (char === '"' || char === "'") {
+      inQuotes = true;
+      quoteChar = char;
+    } else if (char === ' ' || char === '\t') {
+      if (current.length > 0) {
+        args.push(current);
+        current = '';
+      }
+    } else {
+      current += char;
+    }
+  }
+  if (current.length > 0) {
+    args.push(current);
+  }
+  return args;
 }
