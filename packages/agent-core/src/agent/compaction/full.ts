@@ -20,7 +20,6 @@ import {
   retryBackoffDelays,
   sleepForRetry,
 } from '../../loop/retry';
-import type { TelemetryPropertyValue } from '../../telemetry';
 import { renderPrompt } from '../../utils/render-prompt';
 import {
   estimateTokens,
@@ -87,7 +86,7 @@ export class FullCompaction {
     if (this.agent.records.restoring) {
       return;
     }
-    const compactedCount = this.strategy.computeCompactCount(this.agent.context.history);
+    const compactedCount = this.strategy.computeCompactCount(this.agent.context.history, data.source);
     if (compactedCount === 0) {
       throw new KimiError(ErrorCodes.COMPACTION_UNABLE, 'No prefix that can be compacted in current history.');
     }
@@ -132,34 +131,14 @@ export class FullCompaction {
     this.agent.emitEvent({ type: 'compaction.cancelled' });
   }
 
-  complete(
-    result: CompactionResult,
-    llmUsage: TokenUsage | null,
-    retryCount: number = 0,
-  ): void {
+  markCompleted() {
     this.agent.records.logRecord({
       type: 'full_compaction.complete',
-      ...result,
     });
-    const active = this.compacting;
     this.compacting = null;
-    const history = this.agent.context.history;
     this._compactedHistory.push({
-      text: renderMessagesToText(history),
+      text: renderMessagesToText(this.agent.context.history),
     });
-    this.agent.emitEvent({ type: 'compaction.completed', result });
-    if (active !== null) {
-      const properties: Record<string, TelemetryPropertyValue> = {
-        trigger_type: active.telemetryTrigger,
-        before_tokens: result.tokensBefore,
-        after_tokens: result.tokensAfter,
-        duration_ms: Date.now() - active.startedAt,
-        compacted_count: result.compactedCount,
-        retry_count: retryCount,
-        ...llmUsage,
-      };
-      this.agent.telemetry.track('compaction_finished', properties);
-    }
   }
 
   private get tokenCountWithPending(): number {
@@ -317,7 +296,18 @@ export class FullCompaction {
         tokensAfter,
       };
 
-      this.complete(result, usage, retryCount);
+      const active = this.compacting!;
+      this.agent.telemetry.track('compaction_finished', {
+        trigger_type: active.telemetryTrigger,
+        before_tokens: result.tokensBefore,
+        after_tokens: result.tokensAfter,
+        duration_ms: Date.now() - active.startedAt,
+        compacted_count: result.compactedCount,
+        retry_count: retryCount,
+        ...usage,
+      });
+      this.markCompleted();
+      this.agent.emitEvent({ type: 'compaction.completed', result });
       this.agent.context.applyCompaction(result);
       this.triggerPostCompactHook(data, result);
     } catch (error) {

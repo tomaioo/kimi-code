@@ -1,5 +1,6 @@
 import type { Message } from "@moonshot-ai/kosong";
 import { estimateTokensForMessage } from "../../utils/tokens";
+import type { CompactionSource } from "./types";
 
 export interface CompactionConfig {
   triggerRatio: number;
@@ -24,7 +25,7 @@ export const DEFAULT_COMPACTION_CONFIG: CompactionConfig = {
 export interface CompactionStrategy {
   shouldCompact(usedSize: number): boolean;
   shouldBlock(usedSize: number): boolean;
-  computeCompactCount(messages: readonly Message[]): number;
+  computeCompactCount(messages: readonly Message[], source: CompactionSource): number;
   reduceCompactOnOverflow(messages: readonly Message[]): number;
   readonly checkAfterStep: boolean;
   readonly maxCompactionPerTurn: number;
@@ -61,12 +62,22 @@ export class DefaultCompactionStrategy implements CompactionStrategy {
     return reservedSize > 0 && reservedSize < this.maxSize && usedSize + reservedSize >= this.maxSize;
   }
 
-  computeCompactCount(messages: readonly Message[]): number {
+  computeCompactCount(messages: readonly Message[], source: CompactionSource): number {
     // Return value: N messages to be compacted (0 means no compaction possible)
     // LLM Input: messages.slice(0, N) + [user:instruction]
     // Preserved recent messages: messages.slice(N)
-    //
-    // Rules (in order of precedence):
+
+    // Manual compaction
+    if (source === 'manual') {
+      for (let i = messages.length - 1; i > 0; i--) {
+        if (canSplitAfter(messages, i)) {
+          return i;
+        }
+      }
+      return 0;
+    }
+
+    // Auto compaction rules (in order of precedence):
     // 1. The split after messages[N-1] must be safe per `canSplitAfter`:
     //    messages[N-1] is not a user or asst-with-tool-calls, and the retained
     //    suffix messages.slice(N) has no orphan tool result.
