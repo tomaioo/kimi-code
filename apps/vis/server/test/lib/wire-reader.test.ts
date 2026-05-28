@@ -91,12 +91,12 @@ describe('wire-reader', () => {
     const path = join(sessionDir, 'agents', 'main', 'wire.jsonl');
     const { writeFile, readFile } = await import('node:fs/promises');
     const lines = (await readFile(path, 'utf8')).split('\n');
-    lines[0] = '{"type":"metadata","protocol_version":"2.2","created_at":1}';
+    lines[0] = '{"type":"metadata","protocol_version":"0.9","created_at":1}';
     await writeFile(path, lines.join('\n'));
     const result = await readAgentWire(path);
-    expect(result.metadata.protocolVersion).toBe('2.2');
+    expect(result.metadata.protocolVersion).toBe('0.9');
     expect(result.records.length).toBeGreaterThan(0);
-    expect(result.warnings.some((w) => /unrecognised protocol_version.*2\.2/i.test(w))).toBe(
+    expect(result.warnings.some((w) => /unrecognised protocol_version.*0\.9/i.test(w))).toBe(
       true,
     );
   });
